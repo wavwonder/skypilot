@@ -49,8 +49,8 @@ install_requires = [
     # <= 3.13 may encounter https://github.com/ultralytics/yolov5/issues/414
     'pyyaml > 3.13, != 5.4.*',
     'requests',
-    'fastapi',
-    'uvicorn[standard]',
+    'fastapi<0.116.0',
+    'uvicorn[standard]<0.36.0',
     # Some pydantic versions are not compatible with ray. Adopted from ray's
     # setup.py:
     # https://github.com/ray-project/ray/blob/ray-2.9.3/python/setup.py#L254
