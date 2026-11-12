@@ -292,7 +292,8 @@ class RunPod(clouds.Cloud):
             runpod_spec = import_lib_util.find_spec('runpod')
             if runpod_spec is None:
                 return False, dependency_error_msg
-            toml_spec = import_lib_util.find_spec('toml')
+            toml_spec = (import_lib_util.find_spec('tomli') or
+                         import_lib_util.find_spec('toml'))
             if toml_spec is None:
                 return False, dependency_error_msg
         except ValueError:

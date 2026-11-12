@@ -182,7 +182,7 @@ extras_require: Dict[str, List[str]] = {
     'remote': remote,
     # For the container registry auth api. Reference:
     # https://github.com/runpod/runpod-python/releases/tag/1.6.1
-    'runpod': ['runpod>=1.6.1'],
+    'runpod': ['runpod>=1.6.1', 'tomli', 'toml'],
     'fluidstack': [],  # No dependencies needed for fluidstack
     'cudo': ['cudo-compute>=0.1.10'],
     'paperspace': [],  # No dependencies needed for paperspace
