@@ -209,9 +209,18 @@ def get_cluster_info(
         if instance_info['name'].endswith('-head'):
             head_instance_id = instance_id
 
+    custom_ray_options: Dict[str, Any] = {
+        'object-store-memory': 500000000,
+    }
+    if head_instance_id and head_instance_id in running_instances:
+        vcpu_count = running_instances[head_instance_id].get('vcpu_count')
+        if vcpu_count:
+            custom_ray_options['num-cpus'] = str(max(int(vcpu_count), 1))
+
     return common.ClusterInfo(
         instances=instances,
         head_instance_id=head_instance_id,
+        custom_ray_options=custom_ray_options,
         provider_name='runpod',
         provider_config=provider_config,
     )
