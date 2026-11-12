@@ -1205,6 +1205,13 @@ def get_config_schema():
         }
 
     cloud_configs = {
+        'vast': {
+            'type': 'object',
+            'additionalProperties': False,
+            'properties': {
+                'min_cuda_version': {'type': 'number'},
+            },
+        },
         'aws': {
             'type': 'object',
             'required': [],

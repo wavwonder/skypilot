@@ -8,6 +8,7 @@
 from typing import Any, Dict, List, Optional
 
 from sky import sky_logging
+from sky import skypilot_config
 from sky.adaptors import vast
 
 logger = sky_logging.init_logger(__name__)
@@ -88,7 +89,6 @@ def launch(name: str, instance_type: str, region: str, disk_size: int,
     num_gpus = int(instance_type.split('-')[0].replace('x', ''))
 
     query = ' '.join([
-        'chunked=true',
         'georegion=true',
         f'geolocation="{region[-2:]}"',
         f'disk_space>={disk_size}',
@@ -97,7 +97,12 @@ def launch(name: str, instance_type: str, region: str, disk_size: int,
         f'cpu_ram>="{cpu_ram}"',
     ])
 
-    instance_list = vast.vast().search_offers(query=query)
+    min_cuda = skypilot_config.get_nested(('vast', 'min_cuda_version'), None)
+    if min_cuda is not None and num_gpus > 0:
+        query += f' cuda_max_good>={min_cuda}'
+
+    instance_list = vast.vast().search_offers(
+        query=query, type='bid' if preemptible else 'on-demand')
 
     if isinstance(instance_list, int) or len(instance_list) == 0:
         raise RuntimeError('Failed to create instances, could not find an '
@@ -111,25 +116,23 @@ def launch(name: str, instance_type: str, region: str, disk_size: int,
         'id': instance_touse['id'],
         'direct': True,
         'ssh': True,
+        'cancel_unavail': True,
         'env': f'-e __SOURCE=skypilot {port_map}',
-        'onstart_cmd': ';'.join([
-            'touch ~/.no_auto_tmux',
-            f'echo "{vast.vast().api_key_access}" > ~/.vast_api_key',
-        ]),
+        'onstart_cmd': 'touch ~/.no_auto_tmux',
         'label': name,
         'image': image_name,
         'disk': disk_size
     }
 
     if preemptible:
-        launch_params['min_bid'] = instance_touse['min_bid']
+        launch_params['bid_price'] = instance_touse['min_bid']
 
     new_instance_contract = vast.vast().create_instance(**launch_params)
-
-    new_instance = vast.vast().show_instance(
-        id=new_instance_contract['new_contract'])
-
-    return new_instance['id']
+    if (not isinstance(new_instance_contract, dict) or
+            not new_instance_contract.get('success') or
+            not new_instance_contract.get('new_contract')):
+        raise RuntimeError('Vast failed to create the instance.')
+    return str(new_instance_contract['new_contract'])
 
 
 def start(instance_id: str) -> None:

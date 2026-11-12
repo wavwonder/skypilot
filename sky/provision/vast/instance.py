@@ -44,17 +44,28 @@ def _get_head_instance_id(instances: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _failed_start(instance: Dict[str, Any]) -> bool:
+    return (instance['status'] in
+            ('EXITED', 'STOPPED', 'UNKNOWN', 'OFFLINE', 'FROZEN') or
+            instance.get('intended_status') == 'stopped' or
+            instance.get('next_state') == 'stopped')
+
+
 def run_instances(region: str, cluster_name_on_cloud: str,
                   config: common.ProvisionConfig) -> common.ProvisionRecord:
     """Runs instances for the given cluster."""
-    pending_status = ['CREATED', 'RESTARTING']
+    pending_status = ['CREATED', 'RESTARTING', 'LOADING']
 
     created_instance_ids = []
+    resumed_instance_ids = []
     instances: Dict[str, Any] = {}
 
     while True:
         instances = _filter_instances(cluster_name_on_cloud, None)
-        if not status_filter(instances, pending_status):
+        pending = status_filter(instances, pending_status)
+        if any(_failed_start(instance) for instance in pending.values()):
+            raise RuntimeError('Vast instance stopped while starting.')
+        if not pending:
             break
         logger.info(f'Waiting for {len(instances)} instances to be ready.')
         time.sleep(POLL_INTERVAL)
@@ -64,8 +75,9 @@ def run_instances(region: str, cluster_name_on_cloud: str,
     stopped_instances = status_filter(instances, ['EXITED', 'STOPPED'])
 
     if config.resume_stopped_nodes and stopped_instances:
-        for instance in stopped_instances.values():
-            utils.start(instance['id'])
+        for instance_id in stopped_instances:
+            utils.start(instance_id)
+            resumed_instance_ids.append(instance_id)
     else:
         to_start_count = config.count - (len(running_instances) +
                                          len(stopped_instances))
@@ -108,8 +120,21 @@ def run_instances(region: str, cluster_name_on_cloud: str,
                 head_instance_id = instance_id
 
     # Wait for instances to be ready.
+    waiting_for_restart = set(resumed_instance_ids)
     while True:
-        instances = _filter_instances(cluster_name_on_cloud, ['RUNNING'])
+        instances = _filter_instances(cluster_name_on_cloud, None)
+        waiting_for_restart = {
+            inst_id for inst_id in waiting_for_restart
+            if inst_id in instances and
+            instances[inst_id]['status'] in ('EXITED', 'STOPPED')
+        }
+        failed = [
+            inst_id for inst_id, inst in instances.items()
+            if inst_id not in waiting_for_restart and _failed_start(inst)
+        ]
+        if failed:
+            raise RuntimeError(f'Vast instances failed to start: {failed}')
+        instances = status_filter(instances, ['RUNNING'])
         ready_instance_cnt = 0
         for instance_id, instance in instances.items():
             if instance.get('ssh_port') is not None:
@@ -121,14 +146,14 @@ def run_instances(region: str, cluster_name_on_cloud: str,
 
         time.sleep(POLL_INTERVAL)
 
-    head_instance_id = _get_head_instance_id(utils.list_instances())
+    head_instance_id = _get_head_instance_id(instances)
     assert head_instance_id is not None, 'head_instance_id should not be None'
     return common.ProvisionRecord(provider_name='vast',
                                   cluster_name=cluster_name_on_cloud,
                                   region=region,
                                   zone=None,
                                   head_instance_id=head_instance_id,
-                                  resumed_instance_ids=[],
+                                  resumed_instance_ids=resumed_instance_ids,
                                   created_instance_ids=created_instance_ids)
 
 
@@ -187,12 +212,18 @@ def get_cluster_info(
     instances: Dict[str, List[common.InstanceInfo]] = {}
     head_instance_id = None
     for instance_id, instance_info in running_instances.items():
+        ssh_host = instance_info.get('ssh_host')
+        if ssh_host:
+            ssh_port = instance_info['ssh_port']
+        else:
+            ssh_host = instance_info['public_ipaddr']
+            ssh_port = instance_info['ports']['22/tcp'][0]['HostPort']
         instances[instance_id] = [
             common.InstanceInfo(
                 instance_id=instance_id,
                 internal_ip=instance_info['local_ipaddrs'].strip(),
-                external_ip=instance_info['public_ipaddr'],
-                ssh_port=instance_info['ports']['22/tcp'][0]['HostPort'],
+                external_ip=ssh_host,
+                ssh_port=int(ssh_port),
                 tags={},
             )
         ]
@@ -227,9 +258,14 @@ def query_instances(
     instances = _filter_instances(cluster_name_on_cloud, None)
     # "running", "frozen", "stopped", "unknown", "loading"
     status_map = {
+        'CREATED': status_lib.ClusterStatus.INIT,
+        'RESTARTING': status_lib.ClusterStatus.INIT,
         'LOADING': status_lib.ClusterStatus.INIT,
         'EXITED': status_lib.ClusterStatus.STOPPED,
         'STOPPED': status_lib.ClusterStatus.STOPPED,
+        'UNKNOWN': status_lib.ClusterStatus.STOPPED,
+        'OFFLINE': status_lib.ClusterStatus.STOPPED,
+        'FROZEN': status_lib.ClusterStatus.STOPPED,
         'RUNNING': status_lib.ClusterStatus.UP,
     }
     statuses: Dict[str, Tuple[Optional['status_lib.ClusterStatus'],
