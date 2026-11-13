@@ -44,7 +44,8 @@ def launch(name: str,
            image_name: str,
            ports: Optional[List[int]],
            preemptible: bool,
-           ssh_public_key: Optional[str] = None) -> str:
+           ssh_public_key: Optional[str] = None,
+           login: Optional[str] = None) -> str:
     """Launches an instance with the given parameters.
 
     Converts the instance_type to the Vast GPU name, finds the specs for the
@@ -140,6 +141,8 @@ def launch(name: str,
         'image': image_name,
         'disk': disk_size
     }
+    if login is not None:
+        launch_params['login'] = login
 
     commands = ['touch ~/.no_auto_tmux']
     if ssh_public_key:

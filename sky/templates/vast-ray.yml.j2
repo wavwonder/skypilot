@@ -10,6 +10,15 @@ provider:
   module: sky.provision.vast
   region: "{{region}}"
   disable_launch_config_check: true
+  {%- if docker_login_config is not none %}
+  docker_login_config:
+    username: |-
+      {{docker_login_config.username}}
+    password: |-
+      {{docker_login_config.password | indent(6) }}
+    server: |-
+      {{docker_login_config.server}}
+  {%- endif %}
 
 auth:
   ssh_user: root

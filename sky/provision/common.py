@@ -56,6 +56,13 @@ class ProvisionConfig:
     # Optional ports to open on launch of the cluster.
     ports_to_open_on_launch: Optional[List[int]]
 
+    def get_redacted_config(self) -> Dict[str, Any]:
+        config = dataclasses.asdict(self)
+        for field in ('provider_config', 'docker_config'):
+            if login := config[field].get('docker_login_config'):
+                login['password'] = '<redacted>'
+        return config
+
 
 # -------------------- output data model -------------------- #
 

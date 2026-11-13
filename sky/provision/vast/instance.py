@@ -1,10 +1,12 @@
 """Vast instance provisioning."""
 from pathlib import Path
+import shlex
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from sky import sky_logging
 from sky.provision import common
+from sky.provision import docker_utils
 from sky.provision.vast import utils
 from sky.utils import common_utils
 from sky.utils import status_lib
@@ -57,6 +59,14 @@ def run_instances(region: str, cluster_name_on_cloud: str,
     """Runs instances for the given cluster."""
     ssh_public_key_path = config.authentication_config.get('ssh_public_key')
     ssh_public_key = None
+    image_name = config.node_config['ImageId']
+    login = None
+    if credentials := config.provider_config.get('docker_login_config'):
+        registry = docker_utils.DockerLoginConfig(**credentials)
+        image_name = registry.format_image(image_name)
+        login = shlex.join([
+            '-u', registry.username, '-p', registry.password, registry.server
+        ])
     if ssh_public_key_path:
         ssh_public_key = Path(ssh_public_key_path).expanduser().read_text(
             encoding='utf-8').strip()
@@ -116,9 +126,10 @@ def run_instances(region: str, cluster_name_on_cloud: str,
                     region=region,
                     disk_size=config.node_config['DiskSize'],
                     preemptible=config.node_config['Preemptible'],
-                    image_name=config.node_config['ImageId'],
+                    image_name=image_name,
                     ports=config.ports_to_open_on_launch,
-                    ssh_public_key=ssh_public_key)
+                    ssh_public_key=ssh_public_key,
+                    login=login)
             except Exception as e:  # pylint: disable=broad-except
                 logger.warning(f'run_instances error: {e}')
                 raise

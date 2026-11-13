@@ -151,7 +151,7 @@ def bulk_provision(
             logger.debug(_TITLE.format('Provisioning'))
             logger.debug(
                 'Provision config:\n'
-                f'{json.dumps(dataclasses.asdict(bootstrap_config), indent=2)}')
+                f'{json.dumps(bootstrap_config.get_redacted_config(), indent=2)}')
             return _bulk_provision(cloud, region, cluster_name,
                                    bootstrap_config)
         except exceptions.NoClusterLaunchedError:
