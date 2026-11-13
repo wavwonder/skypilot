@@ -312,7 +312,8 @@ def _wait_ssh_connection_direct(ip: str,
     try:
         success = False
         stderr = ''
-        with socket.create_connection((ip, ssh_port), timeout=1) as s:
+        with socket.create_connection((ip, ssh_port),
+                                      timeout=ssh_probe_timeout) as s:
             if s.recv(100).startswith(b'SSH'):
                 # Wait for SSH being actually ready, otherwise we may get the
                 # following error:
