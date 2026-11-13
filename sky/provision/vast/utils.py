@@ -45,7 +45,9 @@ def launch(name: str,
            ports: Optional[List[int]],
            preemptible: bool,
            ssh_public_key: Optional[str] = None,
-           login: Optional[str] = None) -> str:
+           login: Optional[str] = None,
+           cpus: Optional[str] = None,
+           memory: Optional[str] = None) -> str:
     """Launches an instance with the given parameters.
 
     Converts the instance_type to the Vast GPU name, finds the specs for the
@@ -109,9 +111,10 @@ def launch(name: str,
             'eq': gpu_name
         },
         'cpu_ram': {
-            'gte': cpu_ram * 1000
+            'gte': cpu_ram * 1024
         },
     })
+    query.update(vast.resource_query(cpus, memory))
 
     min_cuda = skypilot_config.get_nested(('vast', 'min_cuda_version'), None)
     if min_cuda is not None and num_gpus > 0:
@@ -128,6 +131,16 @@ def launch(name: str,
                            f'offer that satisfies the requirements "{query}".')
 
     instance_touse = instance_list[0]
+    if memory is not None and str(memory).endswith('x'):
+        ratio = float(str(memory)[:-1])
+        eligible = [
+            offer for offer in instance_list
+            if offer['cpu_ram'] >= offer['cpu_cores_effective'] * ratio * 1024
+        ]
+        if not eligible:
+            raise RuntimeError(
+                'No Vast offers satisfy the memory-to-CPU ratio.')
+        instance_touse = eligible[0]
 
     port_map = ' '.join([f'-p {p}:{p}' for p in ports]) if ports else ''
 

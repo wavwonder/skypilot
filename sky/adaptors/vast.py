@@ -5,6 +5,20 @@ import functools
 _vast_sdk = None
 
 
+def resource_query(cpus=None, memory=None):
+    query = {}
+    for field, value, scale in (('cpu_cores_effective', cpus, 1),
+                                ('cpu_ram', memory, 1024)):
+        if value is None or str(value).endswith('x'):
+            continue
+        text = str(value)
+        query[field] = {
+            'gte' if text.endswith('+') else 'eq': float(text.rstrip('+')) *
+                                                   scale
+        }
+    return query
+
+
 def import_package(func):
 
     @functools.wraps(func)

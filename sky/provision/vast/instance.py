@@ -64,9 +64,8 @@ def run_instances(region: str, cluster_name_on_cloud: str,
     if credentials := config.provider_config.get('docker_login_config'):
         registry = docker_utils.DockerLoginConfig(**credentials)
         image_name = registry.format_image(image_name)
-        login = shlex.join([
-            '-u', registry.username, '-p', registry.password, registry.server
-        ])
+        login = shlex.join(
+            ['-u', registry.username, '-p', registry.password, registry.server])
     if ssh_public_key_path:
         ssh_public_key = Path(ssh_public_key_path).expanduser().read_text(
             encoding='utf-8').strip()
@@ -129,7 +128,9 @@ def run_instances(region: str, cluster_name_on_cloud: str,
                     image_name=image_name,
                     ports=config.ports_to_open_on_launch,
                     ssh_public_key=ssh_public_key,
-                    login=login)
+                    login=login,
+                    cpus=config.node_config.get('CPUs'),
+                    memory=config.node_config.get('Memory'))
             except Exception as e:  # pylint: disable=broad-except
                 logger.warning(f'run_instances error: {e}')
                 raise

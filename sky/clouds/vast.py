@@ -191,6 +191,8 @@ class Vast(clouds.Cloud):
 
         return {
             'instance_type': resources.instance_type,
+            'requested_cpus': resources.cpus,
+            'requested_memory': resources.memory,
             'custom_resources': custom_resources,
             'region': region.name,
             'image_id': image_id,
@@ -213,7 +215,6 @@ class Vast(clouds.Cloud):
                     cloud=Vast(),
                     instance_type=instance_type,
                     accelerators=None,
-                    cpus=None,
                 )
                 resource_list.append(r)
             return resource_list
@@ -222,12 +223,15 @@ class Vast(clouds.Cloud):
         accelerators = resources.accelerators
         if accelerators is None:
             # Return a default instance type
-            default_instance_type = Vast.get_default_instance_type(
+            from sky.catalog import vast_catalog  # pylint: disable=import-outside-toplevel
+            default_instance_type = vast_catalog.get_default_instance_type(
                 cpus=resources.cpus,
                 memory=resources.memory,
                 disk_tier=resources.disk_tier,
                 region=resources.region,
-                zone=resources.zone)
+                zone=resources.zone,
+                disk_size=resources.disk_size,
+                use_spot=resources.use_spot)
             if default_instance_type is None:
                 # TODO: Add hints to all return values in this method to help
                 #  users understand why the resources are not launchable.
