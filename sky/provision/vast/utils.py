@@ -94,21 +94,31 @@ def launch(name: str,
     gpu_name = instance_type.split('-')[1].replace('_', ' ')
     num_gpus = int(instance_type.split('-')[0].replace('x', ''))
 
-    query = ' '.join([
-        'georegion=true',
-        f'geolocation="{region[-2:]}"',
-        f'disk_space>={disk_size}',
-        f'num_gpus={num_gpus}',
-        f'gpu_name="{gpu_name}"',
-        f'cpu_ram>="{cpu_ram}"',
-    ])
+    query = vast.region_query(region[-2:])
+    query.update({
+        'disk_space': {
+            'gte': disk_size
+        },
+        'num_gpus': {
+            'eq': num_gpus
+        },
+        'gpu_name': {
+            'eq': gpu_name
+        },
+        'cpu_ram': {
+            'gte': cpu_ram * 1000
+        },
+    })
 
     min_cuda = skypilot_config.get_nested(('vast', 'min_cuda_version'), None)
     if min_cuda is not None and num_gpus > 0:
-        query += f' cuda_max_good>={min_cuda}'
+        query['cuda_max_good'] = {'gte': min_cuda}
 
     instance_list = vast.vast().search_offers(
-        query=query, type='bid' if preemptible else 'on-demand')
+        query=query,
+        type='bid' if preemptible else 'on-demand',
+        storage=disk_size,
+        order='min_bid' if preemptible else 'dph_total')
 
     if isinstance(instance_list, int) or len(instance_list) == 0:
         raise RuntimeError('Failed to create instances, could not find an '
@@ -141,7 +151,7 @@ def launch(name: str,
     launch_params['onstart_cmd'] = ';'.join(commands)
 
     if preemptible:
-        launch_params['bid_price'] = instance_touse['min_bid']
+        launch_params['price'] = instance_touse['min_bid']
 
     new_instance_contract = vast.vast().create_instance(**launch_params)
     if (not isinstance(new_instance_contract, dict) or

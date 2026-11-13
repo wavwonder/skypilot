@@ -27,3 +27,14 @@ def import_package(func):
 def vast():
     """Return the vast package."""
     return _vast_sdk
+
+
+@import_package
+def region_query(region):
+    """Expand a catalog region with the SDK's geographic query helpers."""
+    # pylint: disable=import-outside-toplevel
+    from vastai.api.query import parse_query
+    from vastai.utils import preprocess_search_query
+    _, _, query = preprocess_search_query(
+        f'georegion=true geolocation={region}')
+    return parse_query(query)
