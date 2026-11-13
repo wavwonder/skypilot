@@ -194,6 +194,7 @@ class Vast(clouds.Cloud):
             'custom_resources': custom_resources,
             'region': region.name,
             'image_id': image_id,
+            'use_spot': resources.use_spot,
         }
 
     def _get_feasible_launchable_resources(

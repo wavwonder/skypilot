@@ -1,4 +1,5 @@
 """Vast instance provisioning."""
+from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -45,8 +46,8 @@ def _get_head_instance_id(instances: Dict[str, Any]) -> Optional[str]:
 
 
 def _failed_start(instance: Dict[str, Any]) -> bool:
-    return (instance['status'] in
-            ('EXITED', 'STOPPED', 'UNKNOWN', 'OFFLINE', 'FROZEN') or
+    return (instance['status']
+            in ('EXITED', 'STOPPED', 'UNKNOWN', 'OFFLINE', 'FROZEN') or
             instance.get('intended_status') == 'stopped' or
             instance.get('next_state') == 'stopped')
 
@@ -54,6 +55,12 @@ def _failed_start(instance: Dict[str, Any]) -> bool:
 def run_instances(region: str, cluster_name_on_cloud: str,
                   config: common.ProvisionConfig) -> common.ProvisionRecord:
     """Runs instances for the given cluster."""
+    ssh_public_key_path = config.authentication_config.get('ssh_public_key')
+    ssh_public_key = None
+    if ssh_public_key_path:
+        ssh_public_key = Path(ssh_public_key_path).expanduser().read_text(
+            encoding='utf-8').strip()
+
     pending_status = ['CREATED', 'RESTARTING', 'LOADING']
 
     created_instance_ids = []
@@ -110,7 +117,8 @@ def run_instances(region: str, cluster_name_on_cloud: str,
                     disk_size=config.node_config['DiskSize'],
                     preemptible=config.node_config['Preemptible'],
                     image_name=config.node_config['ImageId'],
-                    ports=config.ports_to_open_on_launch)
+                    ports=config.ports_to_open_on_launch,
+                    ssh_public_key=ssh_public_key)
             except Exception as e:  # pylint: disable=broad-except
                 logger.warning(f'run_instances error: {e}')
                 raise
@@ -125,8 +133,8 @@ def run_instances(region: str, cluster_name_on_cloud: str,
         instances = _filter_instances(cluster_name_on_cloud, None)
         waiting_for_restart = {
             inst_id for inst_id in waiting_for_restart
-            if inst_id in instances and
-            instances[inst_id]['status'] in ('EXITED', 'STOPPED')
+            if inst_id in instances and instances[inst_id]['status'] in (
+                'EXITED', 'STOPPED')
         }
         failed = [
             inst_id for inst_id, inst in instances.items()

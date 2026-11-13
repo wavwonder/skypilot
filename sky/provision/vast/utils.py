@@ -5,6 +5,7 @@
 # python sdk.
 #
 """Vast library wrapper for SkyPilot."""
+import shlex
 from typing import Any, Dict, List, Optional
 
 from sky import sky_logging
@@ -34,9 +35,14 @@ def list_instances() -> Dict[str, Dict[str, Any]]:
     return instance_dict
 
 
-def launch(name: str, instance_type: str, region: str, disk_size: int,
-           image_name: str, ports: Optional[List[int]],
-           preemptible: bool) -> str:
+def launch(name: str,
+           instance_type: str,
+           region: str,
+           disk_size: int,
+           image_name: str,
+           ports: Optional[List[int]],
+           preemptible: bool,
+           ssh_public_key: Optional[str] = None) -> str:
     """Launches an instance with the given parameters.
 
     Converts the instance_type to the Vast GPU name, finds the specs for the
@@ -118,11 +124,21 @@ def launch(name: str, instance_type: str, region: str, disk_size: int,
         'ssh': True,
         'cancel_unavail': True,
         'env': f'-e __SOURCE=skypilot {port_map}',
-        'onstart_cmd': 'touch ~/.no_auto_tmux',
         'label': name,
         'image': image_name,
         'disk': disk_size
     }
+
+    commands = ['touch ~/.no_auto_tmux']
+    if ssh_public_key:
+        commands.extend([
+            'mkdir -p ~/.ssh',
+            'chmod 700 ~/.ssh',
+            'echo "" >> ~/.ssh/authorized_keys',
+            f'echo {shlex.quote(ssh_public_key.strip())} >> ~/.ssh/authorized_keys',
+            'chmod 600 ~/.ssh/authorized_keys',
+        ])
+    launch_params['onstart_cmd'] = ';'.join(commands)
 
     if preemptible:
         launch_params['bid_price'] = instance_touse['min_bid']
