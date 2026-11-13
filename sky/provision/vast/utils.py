@@ -26,6 +26,8 @@ def list_instances() -> Dict[str, Dict[str, Any]]:
 
         if isinstance(instance['actual_status'], str):
             info['status'] = instance['actual_status'].upper()
+        elif instance['actual_status'] is None:
+            info['status'] = 'CREATED'
         else:
             info['status'] = 'UNKNOWN'
         info['name'] = instance['label']

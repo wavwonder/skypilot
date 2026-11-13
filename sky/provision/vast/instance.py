@@ -198,7 +198,7 @@ def action_instances(
     del provider_config  # unused
     instances = _filter_instances(cluster_name_on_cloud, None)
     for inst_id, inst in instances.items():
-        logger.debug(f'Instance {fn} {inst_id}: {inst}')
+        logger.debug(f'Instance {fn} {inst_id}')
         if worker_only and inst['name'].endswith('-head'):
             continue
         try:
