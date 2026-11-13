@@ -23,6 +23,15 @@ _END_TITLE = '-' * 20 + 'End:   {} ' + '-' * 20 + '\n'
 logger = sky_logging.init_logger(__name__)
 
 
+def _redact_config(record: Any) -> Dict[str, Any]:
+    config = dataclasses.asdict(record)
+    for field in ('provider_config', 'docker_config'):
+        section = config.get(field) or {}
+        if login := section.get('docker_login_config'):
+            login['password'] = '<redacted>'
+    return config
+
+
 class ProvisionerError(RuntimeError):
     """Exception for provisioner."""
     errors: List[Dict[str, str]]
@@ -57,11 +66,7 @@ class ProvisionConfig:
     ports_to_open_on_launch: Optional[List[int]]
 
     def get_redacted_config(self) -> Dict[str, Any]:
-        config = dataclasses.asdict(self)
-        for field in ('provider_config', 'docker_config'):
-            if login := config[field].get('docker_login_config'):
-                login['password'] = '<redacted>'
-        return config
+        return _redact_config(self)
 
 
 # -------------------- output data model -------------------- #
@@ -133,6 +138,9 @@ class ClusterInfo:
     def num_instances(self) -> int:
         """Get the number of instances in the cluster."""
         return sum(len(instances) for instances in self.instances.values())
+
+    def get_redacted_config(self) -> Dict[str, Any]:
+        return _redact_config(self)
 
     def get_head_instance(self) -> Optional[InstanceInfo]:
         """Get the instance metadata of the head node"""

@@ -151,7 +151,8 @@ def bulk_provision(
             logger.debug(_TITLE.format('Provisioning'))
             logger.debug(
                 'Provision config:\n'
-                f'{json.dumps(bootstrap_config.get_redacted_config(), indent=2)}')
+                f'{json.dumps(bootstrap_config.get_redacted_config(), indent=2)}'
+            )
             return _bulk_provision(cloud, region, cluster_name,
                                    bootstrap_config)
         except exceptions.NoClusterLaunchedError:
@@ -452,7 +453,7 @@ def _post_provision_setup(
         'Provision record:\n'
         f'{json.dumps(dataclasses.asdict(provision_record), indent=2)}\n'
         'Cluster info:\n'
-        f'{json.dumps(dataclasses.asdict(cluster_info), indent=2)}')
+        f'{json.dumps(cluster_info.get_redacted_config(), indent=2)}')
     head_instance = cluster_info.get_head_instance()
     if head_instance is None:
         e = RuntimeError(f'Provision failed for cluster {cluster_name!r}. '
