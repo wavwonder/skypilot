@@ -118,6 +118,13 @@ WAIT_HEAD_NODE_IP_MAX_ATTEMPTS = 3
 # machine with no internet connection.
 # Refer to: https://stackoverflow.com/questions/3764291/how-can-i-see-if-theres-an-available-and-active-network-connection-in-python # pylint: disable=line-too-long
 _TEST_IP_LIST = ['https://8.8.8.8', 'https://1.1.1.1']
+# Fallback HTTPS endpoints in case raw DNS-resolver IPs (8.8.8.8 / 1.1.1.1)
+# are blocked by datacenter egress rules or TLS proxies.
+_TEST_FALLBACK_URLS = [
+    'https://cp.cloudflare.com/generate_204',
+    'https://pypi.org',
+    'https://api.github.com',
+]
 
 # Allow each CPU thread take 2 tasks.
 # Note: This value cannot be too small, otherwise OOM issue may occur.
@@ -1760,25 +1767,29 @@ def get_node_ips(cluster_yaml: str,
 
 def check_network_connection():
     # Tolerate 3 retries as it is observed that connections can fail.
-    http = requests.Session()
-    http.mount('https://', adapters.HTTPAdapter())
-    http.mount('http://', adapters.HTTPAdapter())
-
-    # Alternate between IPs on each retry
     max_retries = 3
     timeout = 0.5
 
-    for _ in range(max_retries):
-        for ip in _TEST_IP_LIST:
-            try:
-                http.head(ip, timeout=timeout)
-                return
-            except (requests.Timeout, requests.exceptions.ConnectionError):
-                continue
+    with requests.Session() as http:
+        http.mount('https://', adapters.HTTPAdapter())
+        http.mount('http://', adapters.HTTPAdapter())
 
-        timeout *= 2  # Double the timeout for next retry
+        for attempt in range(max_retries):
+            # Probe fixed IPs first so offline hosts fail fast without DNS
+            # lookup delays; fall back to HTTPS domain endpoints on retry in
+            # case raw-IP HTTPS (8.8.8.8 / 1.1.1.1) is blocked by a firewall.
+            urls = (_TEST_IP_LIST if attempt == 0 else
+                    _TEST_FALLBACK_URLS + _TEST_IP_LIST)
+            for url in urls:
+                try:
+                    http.head(url, timeout=timeout)
+                    return
+                except requests.RequestException:
+                    continue
 
-    # If we get here, all IPs failed
+            timeout *= 2  # Double the timeout for next retry
+
+    # If we get here, all probes failed
     # Assume network connection is down
     raise exceptions.NetworkError('Could not refresh the cluster. '
                                   'Network seems down.')

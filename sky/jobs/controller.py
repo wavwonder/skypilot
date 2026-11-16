@@ -49,6 +49,11 @@ if typing.TYPE_CHECKING:
 # to inherit the setup from the `sky` logger.
 logger = sky_logging.init_logger('sky.jobs.controller')
 
+# Maximum consecutive poll cycles skipped on NetworkError before checking
+# the worker cluster directly, so blocked probe endpoints cannot stall job
+# completion and controller autostop indefinitely.
+_MAX_CONSECUTIVE_NETWORK_CHECK_RETRIES = 3
+
 
 def _get_dag_and_name(dag_yaml: str) -> Tuple['sky.Dag', str]:
     dag = dag_utils.load_chain_dag_from_yaml(dag_yaml)
@@ -258,6 +263,7 @@ class JobsController:
                                           start_time=remote_job_submitted_at,
                                           callback_func=callback_func)
 
+        consecutive_network_errors = 0
         while True:
             # NOTE: if we are resuming from a controller failure, we only keep
             # monitoring if the job is in RUNNING state. For all other cases,
@@ -289,11 +295,20 @@ class JobsController:
             # Network glitch was observed even in the VM.
             try:
                 backend_utils.check_network_connection()
+                consecutive_network_errors = 0
             except exceptions.NetworkError:
-                logger.info('Network is not available. Retrying again in '
-                            f'{managed_job_utils.JOB_STATUS_CHECK_GAP_SECONDS} '
-                            'seconds.')
-                continue
+                consecutive_network_errors += 1
+                if (consecutive_network_errors <=
+                        _MAX_CONSECUTIVE_NETWORK_CHECK_RETRIES):
+                    logger.info(
+                        'Network is not available. Retrying again in '
+                        f'{managed_job_utils.JOB_STATUS_CHECK_GAP_SECONDS} '
+                        'seconds.')
+                    continue
+                logger.warning(
+                    'Network connectivity check failed '
+                    f'{consecutive_network_errors} consecutive times; '
+                    'checking worker job status directly.')
 
             # NOTE: we do not check cluster status first because race condition
             # can occur, i.e. cluster can be down during the job status check.
@@ -312,6 +327,9 @@ class JobsController:
                         'Failed to fetch the job status. Start recovery.\n'
                         f'Exception: {common_utils.format_exception(fetch_e)}\n'
                         f'Traceback: {traceback.format_exc()}')
+
+            if job_status is not None:
+                consecutive_network_errors = 0
 
             if job_status == job_lib.JobStatus.SUCCEEDED:
                 success_end_time = managed_job_utils.try_to_get_job_end_time(
@@ -371,10 +389,17 @@ class JobsController:
             # be reflected in the cluster status, depending on the cloud, which
             # can also cause failure of the job, and we need to recover it
             # rather than fail immediately.
-            (cluster_status,
-             handle) = backend_utils.refresh_cluster_status_handle(
-                 cluster_name,
-                 force_refresh_statuses=set(status_lib.ClusterStatus))
+            try:
+                (cluster_status,
+                 handle) = backend_utils.refresh_cluster_status_handle(
+                     cluster_name,
+                     force_refresh_statuses=set(status_lib.ClusterStatus))
+            except exceptions.ClusterStatusFetchingError as e:
+                logger.warning(
+                    'Failed to fetch cluster status; retrying in '
+                    f'{managed_job_utils.JOB_STATUS_CHECK_GAP_SECONDS} '
+                    f'seconds. Error: {common_utils.format_exception(e)}')
+                continue
 
             if cluster_status != status_lib.ClusterStatus.UP:
                 # The cluster is (partially) preempted or failed. It can be

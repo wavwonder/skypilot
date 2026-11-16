@@ -165,3 +165,58 @@ def test_write_cluster_config_w_post_provision_runcmd(mock_fill_template,
         0] == cluster_config_template, "config template incorrect"
     assert mock_fill_template.call_args[0][1][
         'runcmd'] == expected_runcmd, "runcmd not passed correctly"
+
+
+def test_check_network_connection_falls_back_when_ips_blocked() -> None:
+    import requests
+
+    seen_urls = []
+
+    class FakeSession:
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def mount(self, prefix, adapter):
+            return None
+
+        def head(self, url, timeout=None):
+            seen_urls.append(url)
+            if url in backend_utils._TEST_IP_LIST:
+                raise requests.Timeout('blocked raw IP')
+            return mock.MagicMock()
+
+    with mock.patch('sky.backends.backend_utils.requests.Session',
+                    return_value=FakeSession()):
+        backend_utils.check_network_connection()
+
+    assert any(url in backend_utils._TEST_FALLBACK_URLS for url in seen_urls)
+
+
+def test_check_network_connection_raises_when_all_probes_fail() -> None:
+    import requests
+    import pytest
+    from sky import exceptions
+
+    class FakeSession:
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def mount(self, prefix, adapter):
+            return None
+
+        def head(self, url, timeout=None):
+            raise requests.exceptions.ConnectionError('network down')
+
+    with mock.patch('sky.backends.backend_utils.requests.Session',
+                    return_value=FakeSession()):
+        with pytest.raises(exceptions.NetworkError):
+            backend_utils.check_network_connection()
+
