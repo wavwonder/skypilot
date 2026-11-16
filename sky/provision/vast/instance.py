@@ -1,6 +1,7 @@
 """Vast instance provisioning."""
 from pathlib import Path
 import shlex
+import socket
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -223,6 +224,102 @@ def action_instances(
                 ) from e
 
 
+_DIRECT_SSH_PROBE_TIMEOUT_SECONDS = 2.0
+_DIRECT_SSH_PROBE_RETRIES = 3
+_DIRECT_SSH_PROBE_RETRY_INTERVAL_SECONDS = 1.0
+
+
+def _direct_ssh_endpoint(
+        instance_info: Dict[str, Any]) -> Optional[Tuple[str, int]]:
+    public_ip = instance_info.get('public_ipaddr')
+    ports = instance_info.get('ports')
+    if not public_ip or not isinstance(ports, dict):
+        return None
+    mappings = ports.get('22/tcp')
+    if not isinstance(mappings, list):
+        return None
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        raw_port = mapping.get('HostPort')
+        if not raw_port:
+            continue
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            continue
+        if port > 0:
+            return str(public_ip), port
+    return None
+
+
+def _proxy_ssh_endpoint(
+        instance_info: Dict[str, Any]) -> Optional[Tuple[str, int]]:
+    ssh_host = instance_info.get('ssh_host')
+    ssh_port = instance_info.get('ssh_port')
+    if not ssh_host or ssh_port is None:
+        return None
+    try:
+        port = int(ssh_port)
+    except (TypeError, ValueError):
+        return None
+    if port <= 0:
+        return None
+    return str(ssh_host), port
+
+
+def _probe_ssh_endpoint(
+        host: str,
+        port: int,
+        timeout: float = _DIRECT_SSH_PROBE_TIMEOUT_SECONDS) -> str:
+    """Probes an SSH endpoint and returns 'ready', 'refused', or 'unreachable'."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            if sock.recv(100).startswith(b'SSH'):
+                return 'ready'
+            return 'refused'
+    except ConnectionRefusedError:
+        return 'refused'
+    except OSError:
+        return 'unreachable'
+
+
+def _resolve_ssh_endpoint(instance_info: Dict[str, Any]) -> Tuple[str, int]:
+    direct = _direct_ssh_endpoint(instance_info)
+    proxy = _proxy_ssh_endpoint(instance_info)
+    if direct is None:
+        if proxy is not None:
+            return proxy
+        raise RuntimeError(
+            f'No SSH endpoint found for Vast instance {instance_info.get("id")}'
+        )
+    if proxy is None:
+        return direct
+
+    for attempt in range(_DIRECT_SSH_PROBE_RETRIES):
+        status = _probe_ssh_endpoint(*direct)
+        if status == 'ready':
+            return direct
+        if status == 'unreachable':
+            logger.debug(
+                f'Direct SSH {direct[0]}:{direct[1]} unreachable; '
+                f'falling back to proxy {proxy[0]}:{proxy[1]}.')
+            return proxy
+        if attempt + 1 < _DIRECT_SSH_PROBE_RETRIES:
+            if _probe_ssh_endpoint(*proxy) == 'ready':
+                logger.debug(
+                    f'Direct SSH {direct[0]}:{direct[1]} refused while proxy '
+                    f'{proxy[0]}:{proxy[1]} is ready; using proxy.')
+                return proxy
+            time.sleep(_DIRECT_SSH_PROBE_RETRY_INTERVAL_SECONDS)
+
+    logger.debug(
+        f'Direct SSH {direct[0]}:{direct[1]} did not become ready; '
+        f'falling back to proxy {proxy[0]}:{proxy[1]}.')
+    return proxy
+
+
 def get_cluster_info(
         region: str,
         cluster_name_on_cloud: str,
@@ -232,18 +329,13 @@ def get_cluster_info(
     instances: Dict[str, List[common.InstanceInfo]] = {}
     head_instance_id = None
     for instance_id, instance_info in running_instances.items():
-        ssh_host = instance_info.get('ssh_host')
-        if ssh_host:
-            ssh_port = instance_info['ssh_port']
-        else:
-            ssh_host = instance_info['public_ipaddr']
-            ssh_port = instance_info['ports']['22/tcp'][0]['HostPort']
+        ssh_host, ssh_port = _resolve_ssh_endpoint(instance_info)
         instances[instance_id] = [
             common.InstanceInfo(
                 instance_id=instance_id,
                 internal_ip=instance_info['local_ipaddrs'].strip(),
                 external_ip=ssh_host,
-                ssh_port=int(ssh_port),
+                ssh_port=ssh_port,
                 tags={},
             )
         ]
