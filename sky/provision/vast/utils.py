@@ -26,6 +26,8 @@ def list_instances() -> Dict[str, Dict[str, Any]]:
 
         if isinstance(instance['actual_status'], str):
             info['status'] = instance['actual_status'].upper()
+        elif instance['actual_status'] is None:
+            info['status'] = 'CREATED'
         else:
             info['status'] = 'UNKNOWN'
         info['name'] = instance['label']
@@ -46,7 +48,10 @@ def launch(name: str,
            private_docker_registry: Optional[bool] = None,
            login: Optional[str] = None,
            create_instance_kwargs: Optional[Dict[str, Any]] = None,
-           ssh_public_key: Optional[str] = None) -> str:
+           ssh_public_key: Optional[str] = None,
+           cpus: Optional[str] = None,
+           memory: Optional[str] = None,
+           policy_config: Optional[Dict[str, Any]] = None) -> str:
     """Launches an instance with the given parameters.
 
     Converts the instance_type to the Vast GPU name, finds the specs for the
@@ -115,28 +120,66 @@ def launch(name: str,
     gpu_name = instance_type.split('-')[1].replace('_', ' ')
     num_gpus = int(instance_type.split('-')[0].replace('x', ''))
 
-    query = [
-        'chunked=true',
-        'georegion=true',
-        f'geolocation="{region[-2:]}"',
-        f'disk_space>={disk_size}',
-        f'num_gpus={num_gpus}',
-        f'gpu_name="{gpu_name}"',
-        f'cpu_ram>="{cpu_ram}"',
-    ]
-    if secure_only:
-        query.append('datacenter=true')
-        query.append('hosting_type>=1')
-    query_str = ' '.join(query)
+    query = vast.region_query(region[-2:])
+    query.update({
+        'disk_space': {
+            'gte': disk_size
+        },
+        'num_gpus': {
+            'eq': num_gpus
+        },
+        'gpu_name': {
+            'eq': gpu_name
+        },
+        'cpu_ram': {
+            'gte': cpu_ram * 1024
+        },
+    })
+    query.update(vast.resource_query(cpus, memory))
+    query.update(
+        vast.policy_query(
+            preemptible=preemptible,
+            datacenter_only=secure_only,
+            include_cuda=num_gpus > 0,
+            policy_overrides=policy_config,
+        ))
 
-    instance_list = vast.vast().search_offers(query=query_str)
+    instance_list = vast.vast().search_offers(
+        query=query,
+        type='bid' if preemptible else 'on-demand',
+        storage=disk_size,
+        order=vast.search_order(preemptible, policy_overrides=policy_config),
+    )
 
     if isinstance(instance_list, int) or len(instance_list) == 0:
         raise RuntimeError('Failed to create instances, could not find an '
                            'offer that satisfies the requirements '
-                           f'"{query_str}".')
+                           f'"{query}".')
+
+    instance_list = vast.filter_and_sort_offers(
+        instance_list,
+        preemptible=preemptible,
+        datacenter_only=secure_only,
+        include_cuda=num_gpus > 0,
+        memory=memory,
+        policy_overrides=policy_config,
+    )
+    if not instance_list:
+        raise RuntimeError('Failed to create instances, could not find an '
+                           'offer that satisfies the requirements '
+                           f'"{query}".')
 
     instance_touse = instance_list[0]
+    logger.info(
+        f'Selected Vast offer: id={instance_touse.get("id")}, '
+        f'machine_id={instance_touse.get("machine_id")}, '
+        f'host_id={instance_touse.get("host_id")}, '
+        f'geolocation={instance_touse.get("geolocation")}, '
+        f'reliability={instance_touse.get("reliability")}, '
+        f'inet_down={instance_touse.get("inet_down")}, '
+        f'inet_up={instance_touse.get("inet_up")}, '
+        f'direct_port_count={instance_touse.get("direct_port_count")}, '
+        f'dph_total={instance_touse.get("dph_total")}')
 
     # Start with user-provided kwargs as the base
     launch_params: Dict[str, Any] = dict(create_instance_kwargs or {})
@@ -180,7 +223,10 @@ def launch(name: str,
     if 'bid_price' in launch_params:
         launch_params['price'] = launch_params.pop('bid_price')
     if 'price' not in launch_params and preemptible:
-        launch_params['price'] = instance_touse.get('min_bid')
+        bid_price = vast.compute_bid_price(instance_touse,
+                                           policy_overrides=policy_config)
+        if bid_price is not None:
+            launch_params['price'] = bid_price
 
     # Handle onstart_cmd - read from file if onstart path provided
     user_onstart_cmd = launch_params.pop('onstart_cmd', None)
@@ -237,11 +283,12 @@ def launch(name: str,
     launch_params['env'] = env_dict
 
     new_instance_contract = vast.vast().create_instance(**launch_params)
+    if (not isinstance(new_instance_contract, dict) or
+            not new_instance_contract.get('success') or
+            not new_instance_contract.get('new_contract')):
+        raise RuntimeError('Vast failed to create the instance.')
 
-    new_instance = vast.vast().show_instance(
-        id=new_instance_contract['new_contract'])
-
-    return new_instance['id']
+    return str(new_instance_contract['new_contract'])
 
 
 def start(instance_id: str) -> None:

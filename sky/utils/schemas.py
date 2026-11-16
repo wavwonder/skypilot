@@ -2568,6 +2568,57 @@ def get_config_schema():
                 'create_instance_kwargs': {
                     'type': 'object',
                 },
+                'min_cuda_version': {
+                    'type': 'number',
+                },
+                'min_reliability': {
+                    'type': 'number',
+                    'minimum': 0,
+                    'maximum': 1,
+                },
+                'min_inet_down': {
+                    'type': 'number',
+                    'minimum': 0,
+                },
+                'min_inet_up': {
+                    'type': 'number',
+                    'minimum': 0,
+                },
+                'min_direct_port_count': {
+                    'type': 'integer',
+                    'minimum': 0,
+                },
+                'min_duration_hours': {
+                    'type': 'number',
+                    'minimum': 0,
+                },
+                'static_ip_only': {
+                    'type': 'boolean',
+                },
+                'max_hourly_price': {
+                    'type': 'number',
+                    'minimum': 0,
+                },
+                'order_by': {
+                    'type': 'string',
+                    'enum': ['price', 'score', 'reliability'],
+                },
+                'bid_multiplier': {
+                    'type': 'number',
+                    'minimum': 1.0,
+                },
+                'exclude_machine_ids': {
+                    'type': 'array',
+                    'items': {
+                        'type': 'integer',
+                    },
+                },
+                'exclude_host_ids': {
+                    'type': 'array',
+                    'items': {
+                        'type': 'integer',
+                    },
+                },
             }
         },
         'nebius': {

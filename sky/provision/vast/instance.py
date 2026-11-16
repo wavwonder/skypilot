@@ -1,5 +1,7 @@
 """Vast instance provisioning."""
 from pathlib import Path
+import shlex
+import socket
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -47,17 +49,25 @@ def _get_head_instance_id(instances: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _failed_start(instance: Dict[str, Any]) -> bool:
+    return (instance['status']
+            in ('EXITED', 'STOPPED', 'UNKNOWN', 'OFFLINE', 'FROZEN') or
+            instance.get('intended_status') == 'stopped' or
+            instance.get('next_state') == 'stopped')
+
+
 def run_instances(region: str, cluster_name: str, cluster_name_on_cloud: str,
                   config: common.ProvisionConfig) -> common.ProvisionRecord:
     """Runs instances for the given cluster."""
     del cluster_name  # unused
-    pending_status = ['CREATED', 'RESTARTING']
+    pending_status = ['CREATED', 'RESTARTING', 'LOADING']
 
     create_instance_kwargs = config.provider_config.get(
         'create_instance_kwargs', {})
-    logger.debug(f'provider_config: {config.provider_config}')
-    logger.debug(f'create_instance_kwargs from provider_config: '
-                 f'{create_instance_kwargs}')
+    redacted_provider_config = config.get_redacted_config()['provider_config']
+    logger.debug(f'provider_config: {redacted_provider_config}')
+    logger.debug('create_instance_kwargs from provider_config: '
+                 f'{redacted_provider_config.get("create_instance_kwargs", {})}')
 
     # Get SSH public key path and read the content for vast.ai key injection
     ssh_public_key_path = config.authentication_config.get('ssh_public_key')
@@ -79,17 +89,25 @@ def run_instances(region: str, cluster_name: str, cluster_name_on_cloud: str,
         login_config = (docker_login_config if isinstance(
             docker_login_config, docker_utils.DockerLoginConfig) else
                         docker_utils.DockerLoginConfig(**docker_login_config))
-        login_args = (f'-u {login_config.username} '
-                      f'-p {login_config.password} '
-                      f'{login_config.server}')
+        login_args = shlex.join([
+            '-u',
+            login_config.username,
+            '-p',
+            login_config.password,
+            login_config.server,
+        ])
         image_name = login_config.format_image(image_name)
 
     created_instance_ids = []
+    resumed_instance_ids = []
     instances: Dict[str, Any] = {}
 
     while True:
         instances = _filter_instances(cluster_name_on_cloud, None)
-        if not status_filter(instances, pending_status):
+        pending = status_filter(instances, pending_status)
+        if any(_failed_start(instance) for instance in pending.values()):
+            raise RuntimeError('Vast instance stopped while starting.')
+        if not pending:
             break
         logger.info(f'Waiting for {len(instances)} instances to be ready.')
         time.sleep(POLL_INTERVAL)
@@ -99,8 +117,9 @@ def run_instances(region: str, cluster_name: str, cluster_name_on_cloud: str,
     stopped_instances = status_filter(instances, ['EXITED', 'STOPPED'])
 
     if config.resume_stopped_nodes and stopped_instances:
-        for instance in stopped_instances.values():
-            utils.start(instance['id'])
+        for instance_id in stopped_instances:
+            utils.start(instance_id)
+            resumed_instance_ids.append(instance_id)
     else:
         to_start_count = config.count - (len(running_instances) +
                                          len(stopped_instances))
@@ -124,6 +143,7 @@ def run_instances(region: str, cluster_name: str, cluster_name_on_cloud: str,
                                           created_instance_ids=[])
 
         secure_only = config.provider_config.get('secure_only', False)
+        policy_config = config.provider_config.get('policy_config')
         for _ in range(to_start_count):
             node_type = 'head' if head_instance_id is None else 'worker'
             try:
@@ -140,6 +160,9 @@ def run_instances(region: str, cluster_name: str, cluster_name_on_cloud: str,
                     login=login_args,
                     create_instance_kwargs=create_instance_kwargs,
                     ssh_public_key=ssh_public_key,
+                    cpus=config.node_config.get('CPUs'),
+                    memory=config.node_config.get('Memory'),
+                    policy_config=policy_config,
                 )
             except Exception as e:  # pylint: disable=broad-except
                 logger.warning(f'run_instances error: {e}')
@@ -150,8 +173,21 @@ def run_instances(region: str, cluster_name: str, cluster_name_on_cloud: str,
                 head_instance_id = instance_id
 
     # Wait for instances to be ready.
+    waiting_for_restart = set(resumed_instance_ids)
     while True:
-        instances = _filter_instances(cluster_name_on_cloud, ['RUNNING'])
+        instances = _filter_instances(cluster_name_on_cloud, None)
+        waiting_for_restart = {
+            inst_id for inst_id in waiting_for_restart
+            if inst_id in instances and
+            instances[inst_id]['status'] in ('EXITED', 'STOPPED')
+        }
+        failed = [
+            inst_id for inst_id, inst in instances.items()
+            if inst_id not in waiting_for_restart and _failed_start(inst)
+        ]
+        if failed:
+            raise RuntimeError(f'Vast instances failed to start: {failed}')
+        instances = status_filter(instances, ['RUNNING'])
         ready_instance_cnt = 0
         for instance_id, instance in instances.items():
             if instance.get('ssh_port') is not None:
@@ -163,14 +199,14 @@ def run_instances(region: str, cluster_name: str, cluster_name_on_cloud: str,
 
         time.sleep(POLL_INTERVAL)
 
-    head_instance_id = _get_head_instance_id(utils.list_instances())
+    head_instance_id = _get_head_instance_id(instances)
     assert head_instance_id is not None, 'head_instance_id should not be None'
     return common.ProvisionRecord(provider_name='vast',
                                   cluster_name=cluster_name_on_cloud,
                                   region=region,
                                   zone=None,
                                   head_instance_id=head_instance_id,
-                                  resumed_instance_ids=[],
+                                  resumed_instance_ids=resumed_instance_ids,
                                   created_instance_ids=created_instance_ids)
 
 
@@ -207,7 +243,7 @@ def action_instances(
     del provider_config  # unused
     instances = _filter_instances(cluster_name_on_cloud, None)
     for inst_id, inst in instances.items():
-        logger.debug(f'Instance {fn} {inst_id}: {inst}')
+        logger.debug(f'Instance {fn} {inst_id}')
         if worker_only and inst['name'].endswith('-head'):
             continue
         try:
@@ -220,6 +256,102 @@ def action_instances(
                 ) from e
 
 
+_DIRECT_SSH_PROBE_TIMEOUT_SECONDS = 2.0
+_DIRECT_SSH_PROBE_RETRIES = 3
+_DIRECT_SSH_PROBE_RETRY_INTERVAL_SECONDS = 1.0
+
+
+def _direct_ssh_endpoint(
+        instance_info: Dict[str, Any]) -> Optional[Tuple[str, int]]:
+    public_ip = instance_info.get('public_ipaddr')
+    ports = instance_info.get('ports')
+    if not public_ip or not isinstance(ports, dict):
+        return None
+    mappings = ports.get('22/tcp')
+    if not isinstance(mappings, list):
+        return None
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        raw_port = mapping.get('HostPort')
+        if not raw_port:
+            continue
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            continue
+        if port > 0:
+            return str(public_ip), port
+    return None
+
+
+def _proxy_ssh_endpoint(
+        instance_info: Dict[str, Any]) -> Optional[Tuple[str, int]]:
+    ssh_host = instance_info.get('ssh_host')
+    ssh_port = instance_info.get('ssh_port')
+    if not ssh_host or ssh_port is None:
+        return None
+    try:
+        port = int(ssh_port)
+    except (TypeError, ValueError):
+        return None
+    if port <= 0:
+        return None
+    return str(ssh_host), port
+
+
+def _probe_ssh_endpoint(
+        host: str,
+        port: int,
+        timeout: float = _DIRECT_SSH_PROBE_TIMEOUT_SECONDS) -> str:
+    """Probes an SSH endpoint and returns 'ready', 'refused', or 'unreachable'."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            if sock.recv(100).startswith(b'SSH'):
+                return 'ready'
+            return 'refused'
+    except ConnectionRefusedError:
+        return 'refused'
+    except OSError:
+        return 'unreachable'
+
+
+def _resolve_ssh_endpoint(instance_info: Dict[str, Any]) -> Tuple[str, int]:
+    direct = _direct_ssh_endpoint(instance_info)
+    proxy = _proxy_ssh_endpoint(instance_info)
+    if direct is None:
+        if proxy is not None:
+            return proxy
+        raise RuntimeError(
+            f'No SSH endpoint found for Vast instance {instance_info.get("id")}'
+        )
+    if proxy is None:
+        return direct
+
+    for attempt in range(_DIRECT_SSH_PROBE_RETRIES):
+        status = _probe_ssh_endpoint(*direct)
+        if status == 'ready':
+            return direct
+        if status == 'unreachable':
+            logger.debug(
+                f'Direct SSH {direct[0]}:{direct[1]} unreachable; '
+                f'falling back to proxy {proxy[0]}:{proxy[1]}.')
+            return proxy
+        if attempt + 1 < _DIRECT_SSH_PROBE_RETRIES:
+            if _probe_ssh_endpoint(*proxy) == 'ready':
+                logger.debug(
+                    f'Direct SSH {direct[0]}:{direct[1]} refused while proxy '
+                    f'{proxy[0]}:{proxy[1]} is ready; using proxy.')
+                return proxy
+            time.sleep(_DIRECT_SSH_PROBE_RETRY_INTERVAL_SECONDS)
+
+    logger.debug(
+        f'Direct SSH {direct[0]}:{direct[1]} did not become ready; '
+        f'falling back to proxy {proxy[0]}:{proxy[1]}.')
+    return proxy
+
+
 def get_cluster_info(
         region: str,
         cluster_name_on_cloud: str,
@@ -229,16 +361,7 @@ def get_cluster_info(
     instances: Dict[str, List[common.InstanceInfo]] = {}
     head_instance_id = None
     for instance_id, instance_info in running_instances.items():
-        # Vast.ai routes SSH through a gateway (ssh_host, e.g. ssh3.vast.ai).
-        # Using public_ipaddr directly causes SSH timeouts because direct
-        # access is blocked; the gateway is the only reachable path.
-        # ssh_port is always set; ports['22/tcp'] may be None in newer API.
-        ssh_host = (instance_info.get('ssh_host') or
-                    instance_info.get('public_ipaddr', ''))
-        ports_dict = instance_info.get('ports') or {}
-        tcp22 = ports_dict.get('22/tcp') or []
-        ssh_port = (int(tcp22[0]['HostPort'])
-                    if tcp22 else instance_info.get('ssh_port'))
+        ssh_host, ssh_port = _resolve_ssh_endpoint(instance_info)
         instances[instance_id] = [
             common.InstanceInfo(
                 instance_id=instance_id,
@@ -281,15 +404,20 @@ def query_instances(
     instances = _filter_instances(cluster_name_on_cloud, None)
     # "running", "frozen", "stopped", "unknown", "loading"
     status_map = {
+        'CREATED': status_lib.ClusterStatus.INIT,
+        'RESTARTING': status_lib.ClusterStatus.INIT,
         'LOADING': status_lib.ClusterStatus.INIT,
         'EXITED': status_lib.ClusterStatus.STOPPED,
         'STOPPED': status_lib.ClusterStatus.STOPPED,
+        'UNKNOWN': status_lib.ClusterStatus.STOPPED,
+        'OFFLINE': status_lib.ClusterStatus.STOPPED,
+        'FROZEN': status_lib.ClusterStatus.STOPPED,
         'RUNNING': status_lib.ClusterStatus.UP,
     }
     statuses: Dict[str, Tuple[Optional['status_lib.ClusterStatus'],
                               Optional[str]]] = {}
     for inst_id, inst in instances.items():
-        status = status_map[inst['status']]
+        status = status_map.get(inst['status'])
         if non_terminated_only and status is None:
             continue
         statuses[inst_id] = (status, None)

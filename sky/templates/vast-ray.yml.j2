@@ -11,6 +11,9 @@ provider:
   region: "{{region}}"
   disable_launch_config_check: true
   secure_only: {{secure_only}}
+  {%- if policy_config %}
+  policy_config: {{policy_config | tojson}}
+  {%- endif %}
   {%- if create_instance_kwargs %}
   create_instance_kwargs: {{create_instance_kwargs | tojson}}
   {%- endif %}
@@ -24,6 +27,8 @@ available_node_types:
     resources: {}
     node_config:
       InstanceType: {{instance_type}}
+      CPUs: {{requested_cpus | default(none) | tojson}}
+      Memory: {{requested_memory | default(none) | tojson}}
       DiskSize: {{disk_size}}
       ImageId: {{image_id}}
       Preemptible: {{use_spot}}

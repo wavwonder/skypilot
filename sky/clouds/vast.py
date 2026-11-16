@@ -8,6 +8,7 @@ from sky import catalog
 from sky import clouds
 from sky import skypilot_config
 from sky.adaptors import common
+from sky.adaptors import vast as vast_adaptor
 from sky.utils import registry
 from sky.utils import resources_utils
 
@@ -159,7 +160,9 @@ class Vast(clouds.Cloud):
             zone: Optional[str] = None,
             use_spot: bool = False,
             max_hourly_cost: Optional[float] = None,
-            datacenter_only: bool = False) -> Optional[str]:
+            datacenter_only: bool = False,
+            disk_size: int = 20,
+            override_configs: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Returns the default instance type for Vast."""
         # pylint: disable=import-outside-toplevel
         from sky.catalog import vast_catalog
@@ -172,7 +175,9 @@ class Vast(clouds.Cloud):
             zone=zone,
             use_spot=use_spot,
             max_hourly_cost=max_hourly_cost,
-            datacenter_only=datacenter_only)
+            datacenter_only=datacenter_only,
+            disk_size=disk_size,
+            override_configs=override_configs)
 
     @classmethod
     def get_accelerators_from_instance_type(
@@ -223,13 +228,19 @@ class Vast(clouds.Cloud):
             default_value={},
             override_configs=resources.cluster_config_overrides,
         )
+        policy_config = vast_adaptor.get_policy(
+            override_configs=resources.cluster_config_overrides)
 
         return {
             'instance_type': resources.instance_type,
+            'requested_cpus': resources.cpus,
+            'requested_memory': resources.memory,
             'custom_resources': custom_resources,
             'region': region.name,
             'image_id': image_id,
+            'use_spot': resources.use_spot,
             'secure_only': secure_only,
+            'policy_config': policy_config,
             'create_instance_kwargs': create_instance_kwargs or {},
         }
 
@@ -251,7 +262,6 @@ class Vast(clouds.Cloud):
                     cloud=Vast(),
                     instance_type=instance_type,
                     accelerators=None,
-                    cpus=None,
                 )
                 resource_list.append(r)
             return resource_list
@@ -275,7 +285,9 @@ class Vast(clouds.Cloud):
                 zone=resources.zone,
                 use_spot=resources.use_spot,
                 max_hourly_cost=resources.max_hourly_cost,
-                datacenter_only=datacenter_only)
+                datacenter_only=datacenter_only,
+                disk_size=resources.disk_size,
+                override_configs=resources.cluster_config_overrides)
             if default_instance_type is None:
                 # TODO: Add hints to all return values in this method to help
                 #  users understand why the resources are not launchable.

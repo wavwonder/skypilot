@@ -5,11 +5,12 @@ query instance types and pricing information for Vast.ai.
 """
 
 import typing
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 
 from sky.catalog import common
+from sky.catalog import vast_live
 from sky.utils import resources_utils
 from sky.utils import ux_utils
 
@@ -17,6 +18,10 @@ if typing.TYPE_CHECKING:
     from sky.clouds import cloud
 
 _df = common.read_catalog('vast/vms.csv')
+
+
+def _catalog():
+    return vast_live.merge(_df)
 
 
 def _apply_datacenter_filter(df: pd.DataFrame,
@@ -31,7 +36,7 @@ def _apply_datacenter_filter(df: pd.DataFrame,
 
 
 def instance_type_exists(instance_type: str) -> bool:
-    return common.instance_type_exists_impl(_df, instance_type)
+    return common.instance_type_exists_impl(_catalog(), instance_type)
 
 
 def validate_region_zone(
@@ -40,7 +45,7 @@ def validate_region_zone(
     if zone is not None:
         with ux_utils.print_exception_no_traceback():
             raise ValueError('Vast does not support zones.')
-    return common.validate_region_zone_impl('vast', _df, region, zone)
+    return common.validate_region_zone_impl('vast', _catalog(), region, zone)
 
 
 def get_hourly_cost(instance_type: str,
@@ -51,37 +56,46 @@ def get_hourly_cost(instance_type: str,
     if zone is not None:
         with ux_utils.print_exception_no_traceback():
             raise ValueError('Vast does not support zones.')
-    return common.get_hourly_cost_impl(_df, instance_type, use_spot, region,
-                                       zone)
+    return common.get_hourly_cost_impl(_catalog(), instance_type, use_spot,
+                                       region, zone)
 
 
 def get_vcpus_mem_from_instance_type(
         instance_type: str) -> Tuple[Optional[float], Optional[float]]:
-    return common.get_vcpus_mem_from_instance_type_impl(_df, instance_type)
+    return common.get_vcpus_mem_from_instance_type_impl(_catalog(),
+                                                        instance_type)
 
 
-def get_default_instance_type(cpus: Optional[str] = None,
-                              memory: Optional[str] = None,
-                              disk_tier: Optional[
-                                  resources_utils.DiskTier] = None,
-                              local_disk: Optional[str] = None,
-                              region: Optional[str] = None,
-                              zone: Optional[str] = None,
-                              use_spot: bool = False,
-                              max_hourly_cost: Optional[float] = None,
-                              datacenter_only: bool = False) -> Optional[str]:
+def get_default_instance_type(
+        cpus: Optional[str] = None,
+        memory: Optional[str] = None,
+        disk_tier: Optional[resources_utils.DiskTier] = None,
+        local_disk: Optional[str] = None,
+        region: Optional[str] = None,
+        zone: Optional[str] = None,
+        use_spot: bool = False,
+        max_hourly_cost: Optional[float] = None,
+        datacenter_only: bool = False,
+        disk_size: int = 20,
+        override_configs: Optional[Dict[str, Any]] = None) -> Optional[str]:
     del disk_tier, local_disk
-    # NOTE: After expanding catalog to multiple entries, you may
-    # want to specify a default instance type or family.
-    df = _apply_datacenter_filter(_df, datacenter_only)
-    return common.get_instance_type_for_cpus_mem_impl(df, cpus, memory, region,
-                                                      zone, use_spot,
-                                                      max_hourly_cost)
+    if zone is not None:
+        with ux_utils.print_exception_no_traceback():
+            raise ValueError('Vast does not support zones.')
+    return vast_live.select(cpus=cpus,
+                            memory=memory,
+                            disk_size=disk_size,
+                            use_spot=use_spot,
+                            region=region,
+                            max_hourly_cost=max_hourly_cost,
+                            datacenter_only=datacenter_only,
+                            override_configs=override_configs)
 
 
 def get_accelerators_from_instance_type(
         instance_type: str) -> Optional[Dict[str, Union[int, float]]]:
-    return common.get_accelerators_from_instance_type_impl(_df, instance_type)
+    return common.get_accelerators_from_instance_type_impl(
+        _catalog(), instance_type)
 
 
 def get_instance_type_for_accelerator(
@@ -105,7 +119,7 @@ def get_instance_type_for_accelerator(
     if zone is not None:
         with ux_utils.print_exception_no_traceback():
             raise ValueError('Vast does not support zones.')
-    df = _apply_datacenter_filter(_df, datacenter_only)
+    df = _apply_datacenter_filter(_catalog(), datacenter_only)
     return common.get_instance_type_for_accelerator_impl(
         df=df,
         acc_name=acc_name,
@@ -120,7 +134,8 @@ def get_instance_type_for_accelerator(
 
 def get_region_zones_for_instance_type(instance_type: str,
                                        use_spot: bool) -> List['cloud.Region']:
-    df = _df[_df['InstanceType'] == instance_type]
+    df = _catalog()
+    df = df[df['InstanceType'] == instance_type]
     return common.get_region_zones(df, use_spot)
 
 
@@ -135,6 +150,7 @@ def list_accelerators(
         require_price: bool = True) -> Dict[str, List[common.InstanceTypeInfo]]:
     """Returns all instance types in Vast offering GPUs."""
     del require_price  # Unused.
-    return common.list_accelerators_impl('Vast', _df, gpus_only, name_filter,
-                                         region_filter, quantity_filter,
-                                         case_sensitive, all_regions)
+    return common.list_accelerators_impl('Vast', _catalog(), gpus_only,
+                                         name_filter, region_filter,
+                                         quantity_filter, case_sensitive,
+                                         all_regions)
