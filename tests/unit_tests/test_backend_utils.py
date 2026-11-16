@@ -923,3 +923,121 @@ def test_make_safe_symlink_command_leaves_target_unquoted():
         source='/etc/config', target='~/.sky/file_mounts/etc/config')
     assert 'ln -s ~/.sky/file_mounts/etc/config /etc/config' in cmd
     assert "'~/.sky/file_mounts/etc/config'" not in cmd
+
+
+def test_check_network_connection_falls_back_when_ips_blocked() -> None:
+    import requests
+
+    seen_urls = []
+
+    class FakeSession:
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def mount(self, prefix, adapter):
+            return None
+
+        def head(self, url, timeout=None):
+            seen_urls.append(url)
+            if url in backend_utils._TEST_IP_LIST:
+                raise requests.Timeout('blocked raw IP')
+            return mock.MagicMock()
+
+    with mock.patch('sky.backends.backend_utils.requests.Session',
+                    return_value=FakeSession()):
+        backend_utils.check_network_connection()
+
+    assert any(url in backend_utils._TEST_FALLBACK_URLS for url in seen_urls)
+
+
+def test_check_network_connection_raises_when_all_probes_fail() -> None:
+    import pytest
+    import requests
+
+    from sky import exceptions
+
+    class FakeSession:
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def mount(self, prefix, adapter):
+            return None
+
+        def head(self, url, timeout=None):
+            raise requests.exceptions.ConnectionError('network down')
+
+    with mock.patch('sky.backends.backend_utils.requests.Session',
+                    return_value=FakeSession()):
+        with pytest.raises(exceptions.NetworkError):
+            backend_utils.check_network_connection()
+
+
+@pytest.mark.asyncio
+async def test_async_check_network_connection_falls_back_when_ips_blocked(
+) -> None:
+    import aiohttp
+
+    seen_urls = []
+
+    class FakeResponse:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    class FakeSession:
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def head(self, url, timeout=None):
+            seen_urls.append(url)
+            if url in backend_utils._TEST_IP_LIST:
+                raise aiohttp.ClientError('blocked raw IP')
+            return FakeResponse()
+
+    with mock.patch('sky.backends.backend_utils.aiohttp.ClientSession',
+                    return_value=FakeSession()):
+        await backend_utils.async_check_network_connection()
+
+    assert any(url in backend_utils._TEST_FALLBACK_URLS for url in seen_urls)
+
+
+@pytest.mark.asyncio
+async def test_async_check_network_connection_raises_when_all_probes_fail(
+) -> None:
+    import aiohttp
+    import pytest
+
+    from sky import exceptions
+
+    class FakeSession:
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def head(self, url, timeout=None):
+            raise aiohttp.ClientError('network down')
+
+    with mock.patch('sky.backends.backend_utils.aiohttp.ClientSession',
+                    return_value=FakeSession()):
+        with pytest.raises(exceptions.NetworkError):
+            await backend_utils.async_check_network_connection()
+

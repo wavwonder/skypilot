@@ -124,6 +124,11 @@ def _status_check_gap_seconds(first_check: bool) -> float:
 _network_check_in_flight: Optional['asyncio.Task[None]'] = None
 _network_check_ok_at: Optional[float] = None
 
+# Maximum consecutive poll cycles skipped on NetworkError before checking
+# the worker cluster directly, so blocked probe endpoints cannot stall job
+# completion and controller autostop indefinitely.
+_MAX_CONSECUTIVE_NETWORK_CHECK_RETRIES = 3
+
 
 def _network_check_is_fresh() -> bool:
     """Whether the last successful network check can stand in for a new one.
@@ -1623,6 +1628,7 @@ class JobController:
                 self._job_id, task_id)
             emergency_reattach = False
 
+        consecutive_network_errors = 0
         while True:
             # Get job status (skip on first iteration if forcing recovery)
             job_status = None
@@ -1642,12 +1648,20 @@ class JobController:
                 # failure. Network glitch was observed even in the VM.
                 try:
                     await check_network_connection()
+                    consecutive_network_errors = 0
                 except exceptions.NetworkError:
-                    logger.info(
-                        'Network is not available. Retrying again in about '
-                        f'{managed_job_utils.JOB_STATUS_CHECK_GAP_SECONDS} '
-                        'seconds.')
-                    continue
+                    consecutive_network_errors += 1
+                    if (consecutive_network_errors <=
+                            _MAX_CONSECUTIVE_NETWORK_CHECK_RETRIES):
+                        logger.info(
+                            'Network is not available. Retrying again in about '
+                            f'{managed_job_utils.JOB_STATUS_CHECK_GAP_SECONDS} '
+                            'seconds.')
+                        continue
+                    logger.warning(
+                        'Network connectivity check failed '
+                        f'{consecutive_network_errors} consecutive times; '
+                        'checking worker job status directly.')
 
             # A runtime observation can preserve a viable allocation even when
             # recovery is forced. Without one, forced recovery skips the job
@@ -1707,6 +1721,9 @@ class JobController:
                         f'Exception: {common_utils.format_exception(fetch_e)}\n'
                         f'Traceback: {traceback.format_exc()}')
                     # Fall through to recovery logic below
+
+            if job_status is not None:
+                consecutive_network_errors = 0
 
             if not force_transit_to_recovering:
                 # While the job is running, surface external links harvested

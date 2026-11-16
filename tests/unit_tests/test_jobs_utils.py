@@ -1685,3 +1685,59 @@ class TestTransientStatusCheckWindow:
                 'the configured retry budget was not honored')
             window.next_backoff()
             assert window.exhausted
+
+
+@pytest.mark.asyncio
+async def test_jobs_controller_checks_job_after_bounded_network_errors(
+) -> None:
+    from sky import exceptions
+    from sky.jobs import controller as controller_module
+    from sky.jobs import runtime as managed_job_runtime
+
+    ctrl = controller_module.JobController.__new__(
+        controller_module.JobController)
+    ctrl._job_id = 1
+    ctrl._pool = None
+    ctrl._backend = mock.MagicMock()
+    ctrl._backend.run_timestamp = '20260101-000000'
+    ctrl._cleanup_cluster = mock.AsyncMock()
+
+    task = mock.MagicMock()
+    task.name = 'test-task'
+    task.run = 'echo hi'
+    task.envs = {'SKYPILOT_TASK_ID': '1'}
+    task.num_nodes = 1
+
+    executor = mock.MagicMock()
+    executor.max_restarts_on_errors = 0
+
+    with mock.patch.object(managed_job_runtime,
+                           'is_registered',
+                           return_value=False), \
+         mock.patch('sky.jobs.controller.check_network_connection',
+                    new=mock.AsyncMock(
+                        side_effect=exceptions.NetworkError('down'))), \
+         mock.patch('sky.jobs.controller.managed_job_utils.get_job_status',
+                    new=mock.AsyncMock(
+                        return_value=(job_lib.JobStatus.SUCCEEDED, None))) as mock_get_status, \
+         mock.patch('sky.jobs.controller.managed_job_utils.try_to_get_job_end_time',
+                    return_value=200.0), \
+         mock.patch('sky.jobs.controller.managed_job_state.set_succeeded_async',
+                    new=mock.AsyncMock()), \
+         mock.patch('sky.jobs.controller._download_logs_from_named_cluster',
+                    return_value=True), \
+         mock.patch('sky.jobs.controller.asyncio.sleep',
+                    new=mock.AsyncMock()):
+        result = await ctrl._monitor_one_task_impl(
+            task_id=0,
+            task=task,
+            cluster_name='test-cluster',
+            executor=executor,
+            status_logger=utils.JobStatusLogger(),
+            callback_func=mock.AsyncMock(),
+        )
+
+    assert result is True
+    assert mock_get_status.await_count == 1
+    ctrl._cleanup_cluster.assert_awaited_once_with('test-cluster')
+
