@@ -132,9 +132,43 @@ def _parse_pod(pod: Dict[str, Any]) -> Dict[str, Any]:
     return info
 
 
+def _has_ssh_endpoint(pod: Dict[str, Any]) -> bool:
+    ssh_direct = (pod.get('ssh') or {}).get('direct')
+    if (isinstance(ssh_direct, dict) and ssh_direct.get('host') is not None
+            and ssh_direct.get('port') is not None):
+        return True
+    runtime = pod.get('runtime') or {}
+    for port in runtime.get('ports') or []:
+        if (port.get('type') == 'tcp' and port.get('private') == 22 and
+                port.get('ip') is not None and port.get('public') is not None):
+            return True
+    return False
+
+
+def _needs_pod_details(pod: Dict[str, Any]) -> bool:
+    if pod.get('status') != 'RUNNING':
+        return False
+    return pod.get('runtime') is None or not _has_ssh_endpoint(pod)
+
+
 def list_instances() -> Dict[str, Dict[str, Any]]:
     """Lists instances associated with API key."""
-    return {pod['id']: _parse_pod(pod) for pod in _list_pods()}
+    instances: Dict[str, Dict[str, Any]] = {}
+    for pod in _list_pods():
+        pod_id = pod['id']
+        if _needs_pod_details(pod):
+            try:
+                detailed_pod = runpod.rest_request(
+                    'GET', f'/pods/{runpod.path_segment(pod_id)}')
+                if isinstance(detailed_pod, dict):
+                    pod = detailed_pod
+            except runpod.RunPodRestError as e:
+                if e.status_code == 404:
+                    continue
+                logger.warning(
+                    f'Failed to fetch RunPod pod details for {pod_id}: {e}')
+        instances[pod_id] = _parse_pod(pod)
+    return instances
 
 
 def delete_pod_template(template_id: str) -> None:

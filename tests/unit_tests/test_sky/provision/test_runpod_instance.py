@@ -3,8 +3,10 @@ from unittest import mock
 
 import pytest
 
+from sky.adaptors import runpod
 from sky.provision import common
 from sky.provision.runpod import instance as runpod_instance
+from sky.provision.runpod import utils as runpod_utils
 from sky.utils import status_lib
 
 _CLUSTER = 'sky-test'
@@ -147,3 +149,238 @@ class TestGetClusterInfo:
         assert node.ssh_port == 2222
         assert info.head_instance_id == 'p1'
         assert info.custom_ray_options == {'num-cpus': '8'}
+
+
+class TestListInstancesEnrichment:
+
+    def test_enriches_running_pod_when_list_omits_endpoints(self, monkeypatch):
+        calls = []
+
+        def fake_rest(method, path, json=None, params=None):
+            del json, params
+            calls.append((method, path))
+            if (method, path) == ('GET', '/pods'):
+                return {
+                    'pods': [{
+                        'id': 'pod-1',
+                        'name': f'{_CLUSTER}-head',
+                        'status': 'RUNNING',
+                        'runtime': None,
+                        'ssh': {
+                            'direct': None
+                        },
+                    }],
+                    'pagination': {
+                        'nextCursor': None,
+                        'hasNextPage': False,
+                    },
+                }
+            if (method, path) == ('GET', '/pods/pod-1'):
+                return {
+                    'id': 'pod-1',
+                    'name': f'{_CLUSTER}-head',
+                    'status': 'RUNNING',
+                    'ssh': {
+                        'direct': {
+                            'host': '1.2.3.4',
+                            'port': 2222,
+                        },
+                    },
+                    'runtime': {
+                        'ports': [{
+                            'private': 22,
+                            'public': 2222,
+                            'type': 'tcp',
+                            'ip': '1.2.3.4',
+                        }],
+                    },
+                }
+            raise AssertionError(f'Unexpected call {method} {path}')
+
+        monkeypatch.setattr(runpod, 'rest_request', fake_rest)
+
+        instances = runpod_utils.list_instances()
+
+        assert calls == [('GET', '/pods'), ('GET', '/pods/pod-1')]
+        assert instances['pod-1']['external_ip'] == '1.2.3.4'
+        assert instances['pod-1']['ssh_port'] == 2222
+        assert instances['pod-1']['port2endpoint'] == {
+            22: {
+                'host': '1.2.3.4',
+                'port': 2222,
+            }
+        }
+
+    def test_enriches_running_pod_when_runtime_empty_and_no_ssh_direct(
+            self, monkeypatch):
+        calls = []
+
+        def fake_rest(method, path, json=None, params=None):
+            del json, params
+            calls.append((method, path))
+            if (method, path) == ('GET', '/pods'):
+                return {
+                    'pods': [{
+                        'id': 'pod-1',
+                        'name': f'{_CLUSTER}-head',
+                        'status': 'RUNNING',
+                        'runtime': {
+                            'ports': []
+                        },
+                        'ssh': {
+                            'direct': None
+                        },
+                    }],
+                    'pagination': {
+                        'nextCursor': None,
+                        'hasNextPage': False,
+                    },
+                }
+            if (method, path) == ('GET', '/pods/pod-1'):
+                return {
+                    'id': 'pod-1',
+                    'name': f'{_CLUSTER}-head',
+                    'status': 'RUNNING',
+                    'ssh': {
+                        'direct': {
+                            'host': '5.6.7.8',
+                            'port': 3333,
+                        },
+                    },
+                    'runtime': {
+                        'ports': []
+                    },
+                }
+            raise AssertionError(f'Unexpected call {method} {path}')
+
+        monkeypatch.setattr(runpod, 'rest_request', fake_rest)
+
+        instances = runpod_utils.list_instances()
+
+        assert calls == [('GET', '/pods'), ('GET', '/pods/pod-1')]
+        assert instances['pod-1']['external_ip'] == '5.6.7.8'
+        assert instances['pod-1']['ssh_port'] == 3333
+
+    def test_skips_detail_call_when_endpoints_present_or_not_running(
+            self, monkeypatch):
+        calls = []
+
+        def fake_rest(method, path, json=None, params=None):
+            del json, params
+            calls.append((method, path))
+            assert (method, path) == ('GET', '/pods')
+            return {
+                'pods': [
+                    {
+                        'id': 'pod-direct',
+                        'name': f'{_CLUSTER}-head',
+                        'status': 'RUNNING',
+                        'ssh': {
+                            'direct': {
+                                'host': '1.2.3.4',
+                                'port': 2222,
+                            },
+                        },
+                        'runtime': {
+                            'ports': []
+                        },
+                    },
+                    {
+                        'id': 'pod-port22',
+                        'name': f'{_CLUSTER}-worker',
+                        'status': 'RUNNING',
+                        'ssh': {
+                            'direct': None
+                        },
+                        'runtime': {
+                            'ports': [{
+                                'private': 22,
+                                'public': 2223,
+                                'type': 'tcp',
+                                'ip': '1.2.3.5',
+                            }],
+                        },
+                    },
+                    {
+                        'id': 'pod-pending',
+                        'name': 'other-head',
+                        'status': 'PROVISIONING',
+                        'runtime': None,
+                        'ssh': {
+                            'direct': None
+                        },
+                    },
+                ],
+                'pagination': {
+                    'nextCursor': None,
+                    'hasNextPage': False,
+                },
+            }
+
+        monkeypatch.setattr(runpod, 'rest_request', fake_rest)
+
+        instances = runpod_utils.list_instances()
+
+        assert calls == [('GET', '/pods')]
+        assert instances['pod-direct']['ssh_port'] == 2222
+        assert instances['pod-port22']['ssh_port'] == 2223
+        assert 'ssh_port' not in instances['pod-pending']
+
+    def test_handles_404_during_enrichment_gracefully(self, monkeypatch):
+
+        def fake_rest(method, path, json=None, params=None):
+            del json, params
+            if (method, path) == ('GET', '/pods'):
+                return {
+                    'pods': [{
+                        'id': 'pod-gone',
+                        'name': f'{_CLUSTER}-head',
+                        'status': 'RUNNING',
+                        'runtime': None,
+                        'ssh': {
+                            'direct': None
+                        },
+                    }],
+                    'pagination': {
+                        'nextCursor': None,
+                        'hasNextPage': False,
+                    },
+                }
+            if (method, path) == ('GET', '/pods/pod-gone'):
+                raise runpod.RunPodRestError('Not Found', status_code=404)
+            raise AssertionError(f'Unexpected call {method} {path}')
+
+        monkeypatch.setattr(runpod, 'rest_request', fake_rest)
+
+        assert runpod_utils.list_instances() == {}
+
+    def test_falls_back_to_list_record_on_transient_rest_error(
+            self, monkeypatch):
+
+        def fake_rest(method, path, json=None, params=None):
+            del json, params
+            if (method, path) == ('GET', '/pods'):
+                return {
+                    'pods': [{
+                        'id': 'pod-err',
+                        'name': f'{_CLUSTER}-head',
+                        'status': 'RUNNING',
+                        'runtime': None,
+                        'ssh': {
+                            'direct': None
+                        },
+                    }],
+                    'pagination': {
+                        'nextCursor': None,
+                        'hasNextPage': False,
+                    },
+                }
+            if (method, path) == ('GET', '/pods/pod-err'):
+                raise runpod.RunPodRestError('Server Error', status_code=500)
+            raise AssertionError(f'Unexpected call {method} {path}')
+
+        monkeypatch.setattr(runpod, 'rest_request', fake_rest)
+
+        instances = runpod_utils.list_instances()
+        assert instances['pod-err']['status'] == 'RUNNING'
+        assert 'ssh_port' not in instances['pod-err']
