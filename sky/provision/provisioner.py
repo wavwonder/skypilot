@@ -498,7 +498,8 @@ def _wait_ssh_connection_direct(ip: str,
     try:
         success = False
         stderr = ''
-        with socket.create_connection((ip, ssh_port), timeout=1) as s:
+        with socket.create_connection((ip, ssh_port),
+                                      timeout=ssh_probe_timeout) as s:
             if s.recv(100).startswith(b'SSH'):
                 # Wait for SSH being actually ready, otherwise we may get the
                 # following error:
@@ -646,7 +647,7 @@ def _post_provision_setup(
         'Provision record:\n'
         f'{json.dumps(dataclasses.asdict(provision_record), indent=2)}\n'
         'Cluster info:\n'
-        f'{json.dumps(dataclasses.asdict(cluster_info), indent=2)}')
+        f'{json.dumps(cluster_info.get_redacted_config(), indent=2)}')
     head_instance = cluster_info.get_head_instance()
     if head_instance is None:
         e = RuntimeError(f'Provision failed for cluster {cluster_name!r}. '

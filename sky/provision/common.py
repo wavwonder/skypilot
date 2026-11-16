@@ -41,9 +41,21 @@ class StopFailoverError(Exception):
 # purposes.
 SENSITIVE_FIELDS: List[Tuple[str, ...]] = [
     ('docker_config', 'docker_login_config', 'password'),
+    ('provider_config', 'docker_login_config', 'password'),
     ('provider_config', 'create_instance_kwargs', 'login'),
     ('provider_config', 'create_instance_kwargs', 'api_key'),
 ]
+
+
+def _redact_config(record: Any) -> Dict[str, Any]:
+    """Return a dict copy of record with sensitive fields redacted."""
+    config = dataclasses.asdict(record)
+    config_copy = config_utils.Config(config)
+    for field_list in SENSITIVE_FIELDS:
+        val = config_copy.get_nested(field_list, default_value=None)
+        if val is not None:
+            config_copy.set_nested(field_list, '<redacted>')
+    return dict(**config_copy)
 
 
 def register_sensitive_fields(fields: List[Tuple[str, ...]]) -> None:
@@ -75,15 +87,7 @@ class ProvisionConfig:
 
     def get_redacted_config(self) -> Dict[str, Any]:
         """Get the redacted config."""
-        config = dataclasses.asdict(self)
-
-        config_copy = config_utils.Config(config)
-
-        for field_list in SENSITIVE_FIELDS:
-            val = config_copy.get_nested(field_list, default_value=None)
-            if val is not None:
-                config_copy.set_nested(field_list, '<redacted>')
-        return dict(**config_copy)
+        return _redact_config(self)
 
 
 # -------------------- output data model -------------------- #
@@ -210,6 +214,10 @@ class ClusterInfo:
     def num_instances(self) -> int:
         """Get the number of instances in the cluster."""
         return sum(len(instances) for instances in self.instances.values())
+
+    def get_redacted_config(self) -> Dict[str, Any]:
+        """Get the redacted cluster info."""
+        return _redact_config(self)
 
     def get_head_instance(self) -> Optional[InstanceInfo]:
         """Get the instance metadata of the head node"""
